@@ -1,0 +1,57 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# NOTE on runner choice: this repo's script contains a Windows PowerShell 5.1
+# DSC `Configuration` block. The PowerShell parser can only resolve the
+# `Configuration` keyword where a DSC schema store exists, i.e. on Windows.
+# On ubuntu-latest (pwsh 7 / Linux, no OMI store) the parser ALWAYS reports
+# these 3 artifacts even for a clean file:
+#   1. "Unable to find DSC schema store at /etc/opt/omi/conf/dsc/configuration"
+#   2. "Unexpected token '{' in expression or statement." (Configuration brace)
+#   3. "Unexpected token '}' in expression or statement." (matching brace)
+# On windows-latest the same file parses with 0 errors, so this job runs
+# there. The parser step uses Windows PowerShell 5.1 (`powershell`), matching
+# the script's `#Requires -Version 5.0` target runtime.
+
+jobs:
+  powershell-lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check (Windows PowerShell 5.1 parser)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -Filter '*.ps1'
+          if (-not $files) { throw 'No .ps1 files found.' }
+          $failed = $false
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              foreach ($e in $errors) {
+                Write-Host "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+          }
+          if ($failed) { throw 'PowerShell syntax errors found.' }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          }
+          Import-Module PSScriptAnalyzer
+          $results = Invoke-ScriptAnalyzer -Path . `
+            -Settings ./PSScriptAnalyzerSettings.psd1 -Recurse
+          $results | Format-Table -AutoSize | Out-String | Write-Host
+          $errors = $results | Where-Object { $_.Severity -eq 'Error' }
+          if ($errors) { throw "PSScriptAnalyzer reported $($errors.Count) error(s)." }
