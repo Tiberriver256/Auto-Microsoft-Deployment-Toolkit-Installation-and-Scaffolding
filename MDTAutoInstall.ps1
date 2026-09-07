@@ -95,7 +95,7 @@ $InstalledModules = Get-Module -ListAvailable
 
 if(!($InstalledModules | Where-Object {$_.Name -match "PoshProgressBar"}))
 {
-    Install-Module PoshProgressBar -Verbose
+    Install-Module PoshProgressBar -Scope CurrentUser -Force -Verbose
 }
 
 # LEGACY cosmetic icon for the progress bar. Delete this block if the URL 404s.
@@ -111,7 +111,7 @@ Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Statu
 
 if(!($InstalledModules | Where-Object {$_.Name -match "xPSDesiredStateConfiguration"}))
 {
-    Install-Module xPSDesiredStateConfiguration -Verbose
+    Install-Module xPSDesiredStateConfiguration -Scope CurrentUser -Force -Verbose
 }
 
 Configuration DeployMDT2013Lab    
@@ -238,8 +238,13 @@ Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Statu
 
 #region Extracting ISOs and importing into MDT
 
-New-Item -Path $DeploymentSharePath -ItemType directory -Force
-New-SmbShare -Name $DeploymentShareName -Path $DeploymentSharePath -FullAccess Administrators
+# Idempotent: reruns must not throw if the directory or share already exists.
+if (-not (Test-Path -LiteralPath $DeploymentSharePath)) {
+    New-Item -Path $DeploymentSharePath -ItemType directory -Force | Out-Null
+}
+if (-not (Get-SmbShare -Name $DeploymentShareName -ErrorAction SilentlyContinue)) {
+    New-SmbShare -Name $DeploymentShareName -Path $DeploymentSharePath -FullAccess Administrators
+}
 Import-Module "C:\Program Files\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"
 new-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root $DeploymentSharePath -Description "MDT Deployment Share" -NetworkPath $DeploymentShareNetworkPath -Verbose | add-MDTPersistentDrive -Verbose
 new-item -path "DS001:\Operating Systems" -enable "True" -Name "ISO No Updates" -Comments "This folder holds WIM files created from the ISOs. These have no Windows updates installed and no 3rd party software." -ItemType "folder" -Verbose

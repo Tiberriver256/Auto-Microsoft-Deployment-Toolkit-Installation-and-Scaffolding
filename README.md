@@ -10,6 +10,15 @@
 > scaffolding example. **There is no revival plan on this branch** — see
 > “Modernization path” below if you want to port it.
 
+> 🖥️ **Prerequisites (non-negotiable, enforced by `#Requires`):**
+>
+> - **Windows only**, elevated shell — **Run as Administrator**.
+> - **Windows PowerShell 5.1 only** — not pwsh 6/7 (the script uses a
+>   Windows-PS-5.1 DSC `Configuration` block).
+> - **MDT 2013 Update 2** installed (or installable) + period-correct ADK/WinPE.
+>
+> If any of these is not true, stop — the script cannot work for you.
+
 ## What it does (when its 2016 dependencies existed)
 
 Single script `MDTAutoInstall.ps1` that:
