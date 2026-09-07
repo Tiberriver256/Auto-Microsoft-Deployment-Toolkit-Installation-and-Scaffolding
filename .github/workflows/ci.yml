@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  powershell-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check (PowerShell parser)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -Filter '*.ps1'
+          if (-not $files) { throw 'No .ps1 files found.' }
+          $failed = $false
+          foreach ($f in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              foreach ($e in $errors) {
+                Write-Host "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              }
+            }
+          }
+          if ($failed) { throw 'PowerShell syntax errors found.' }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          }
+          Import-Module PSScriptAnalyzer
+          $results = Invoke-ScriptAnalyzer -Path . `
+            -Settings ./PSScriptAnalyzerSettings.psd1 -Recurse
+          $results | Format-Table -AutoSize | Out-String | Write-Host
+          $errors = $results | Where-Object { $_.Severity -eq 'Error' }
+          if ($errors) { throw "PSScriptAnalyzer reported $($errors.Count) error(s)." }

@@ -1,19 +1,115 @@
-﻿$ISOPath = "C:\My\DSCTesting\MDTISOs"
+﻿#Requires -Version 5.0
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    LEGACY-2016: Installs MDT 2013 and scaffolds a deployment share (reference only).
+.DESCRIPTION
+    2016-era automation for MDT 2013 Update 2 targeting Windows 7 / 8.1 / 10
+    (1507-era) eval media. Download sources are believed dead; see
+    docs/DOWNLOADS.md. Review the README before running.
+    Requires elevation. The task-sequence local-admin password must be passed
+    explicitly via -TaskSequenceAdminCredential (SecureString password);
+    it is never hardcoded.
+.EXAMPLE
+    $cred = Get-Credential -Message 'Local admin password for MDT task sequences'
+    .\MDTAutoInstall.ps1 -ISOPath 'C:\MDT\ISOs' -TaskSequenceAdminCredential $cred
+#>
+[CmdletBinding(SupportsShouldProcess)]
+param(
+    [Parameter()]
+    [string]$ISOPath = 'C:\MDT\ISOs',
+
+    [Parameter()]
+    [string]$DeploymentSharePath = 'C:\DeploymentShare',
+
+    [Parameter()]
+    [string]$DeploymentShareName = 'DeploymentShare$',
+
+    [Parameter()]
+    [string]$DeploymentShareNetworkPath = "\\$env:COMPUTERNAME\DeploymentShare$",
+
+    [Parameter()]
+    [string[]]$Servers = @('localhost'),
+
+    [Parameter()]
+    [string]$RegisteredFullName = 'Change Me',
+
+    [Parameter()]
+    [string]$RegisteredOrgName = 'Change Me',
+
+    [Parameter()]
+    [string]$RegisteredHomePage = 'https://example.com',
+
+    [Parameter(Mandatory)]
+    [System.Management.Automation.PSCredential]$TaskSequenceAdminCredential,
+
+    [Parameter()]
+    [hashtable]$ExpectedFileHashes = @{}
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# TLS 1.2+ for all downloads (legacy http:// sources must be replaced; see docs/DOWNLOADS.md).
+[Net.ServicePointManager]::SecurityProtocol = ([Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12)
+
+if (-not (Test-Path -LiteralPath $ISOPath)) {
+    New-Item -Path $ISOPath -ItemType Directory -Force | Out-Null
+}
+if (-not (Test-Path -LiteralPath $DeploymentSharePath)) {
+    if ($PSCmdlet.ShouldProcess($DeploymentSharePath, 'Create deployment share directory')) {
+        New-Item -Path $DeploymentSharePath -ItemType Directory -Force | Out-Null
+    }
+}
+
+function Assert-FileSHA256 {
+    <#
+    .SYNOPSIS
+        Verifies a staged download against an expected SHA256 hash.
+    .DESCRIPTION
+        Looks up (Split-Path -Leaf $Path) in $ExpectedFileHashes. If no entry
+        exists, writes a warning and returns (legacy mode). If an entry exists
+        and mismatches, throws. Populate -ExpectedFileHashes before real runs.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][hashtable]$ExpectedHashes
+    )
+    $leaf = Split-Path -Leaf $Path
+    if (-not $ExpectedHashes.ContainsKey($leaf)) {
+        Write-Warning "No expected SHA256 registered for '$leaf'. Add it to -ExpectedFileHashes (see docs/DOWNLOADS.md)."
+        return
+    }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    if ($actual -ne $ExpectedHashes[$leaf]) {
+        throw "SHA256 mismatch for '$leaf'. Expected $($ExpectedHashes[$leaf]), got $actual."
+    }
+}
+
+# Plaintext is required by the MDT task-sequence cmdlet; derive it only here
+# from the SecureString credential and clear it at the end of the script.
+$TaskSequenceAdminPlaintext = $TaskSequenceAdminCredential.GetNetworkCredential().Password
 
 $InstalledModules = Get-Module -ListAvailable
 
-if(!($InstalledModules | where {$_.Name -match "PoshProgressBar"}))
+if(!($InstalledModules | Where-Object {$_.Name -match "PoshProgressBar"}))
 {
     Install-Module PoshProgressBar -Verbose
 }
 
-(New-Object System.Net.WebClient).DownloadFile("https://raw.githubusercontent.com/Tiberriver256/Tiberriver256.GitHub.io/master/favicon.ico", "$ISOPath\favicon.ico")
+# LEGACY cosmetic icon for the progress bar. Delete this block if the URL 404s.
+$FaviconPath = Join-Path $ISOPath 'favicon.ico'
+if (-not (Test-Path -LiteralPath $FaviconPath)) {
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/Tiberriver256/Tiberriver256.GitHub.io/master/favicon.ico' -OutFile $FaviconPath
+}
+Assert-FileSHA256 -Path $FaviconPath -ExpectedHashes $ExpectedFileHashes
 
-$PoshProgressBar = New-ProgressBar -MaterialDesign -Theme Dark -IsIndeterminate $True -Type Circle -IconPath "$ISOPath\favicon.ico" -Size Medium
+$PoshProgressBar = New-ProgressBar -MaterialDesign -Theme Dark -IsIndeterminate $True -Type Circle -IconPath "$FaviconPath" -Size Medium
 
 Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Installing xPSDesiredStateConfiguration"
 
-if(!($InstalledModules | where {$_.Name -match "xPSDesiredStateConfiguration"}))
+if(!($InstalledModules | Where-Object {$_.Name -match "xPSDesiredStateConfiguration"}))
 {
     Install-Module xPSDesiredStateConfiguration -Verbose
 }
@@ -36,6 +132,7 @@ Configuration DeployMDT2013Lab
 
     xRemoteFile DownloadIMDisk
     {
+        # LEGACY WARNING: plain-HTTP legacy host (see docs/DOWNLOADS.md entry 2). Replace with HTTPS + ExpectedFileHashes before use.
         URI = "http://www.ltr-data.se/files/imdiskinst.exe"
         DestinationPath = "$ISOPath\imdiskinst.exe"
         MatchSource = $False
@@ -69,6 +166,7 @@ Configuration DeployMDT2013Lab
     xRemoteFile DownloadWSUSOfflineUpdater
     {
     
+        # LEGACY WARNING: plain-HTTP legacy host (see docs/DOWNLOADS.md entry 5). Replace with HTTPS + ExpectedFileHashes before use.
         URI = "http://download.wsusoffline.net/wsusoffline106.zip"
         DestinationPath = "$ISOPath\wsusoffline106.zip"
         MatchSource = $False
@@ -98,6 +196,7 @@ Configuration DeployMDT2013Lab
 
     xRemoteFile Win7EnterPriseISO
     {
+        # LEGACY WARNING: Windows 7 eval, EOL + plain HTTP (see docs/DOWNLOADS.md entry 6).
         URI = "http://care.dlservice.microsoft.com/dl/download/evalx/win7/x64/EN/7600.16385.090713-1255_x64fre_enterprise_en-us_EVAL_Eval_Enterprise-GRMCENXEVAL_EN_DVD.iso"
         DestinationPath = "$ISOPath\Win7EnterpriseTrialx64.iso"
         MatchSource = $False
@@ -105,6 +204,7 @@ Configuration DeployMDT2013Lab
 
     xRemoteFile Win81EnterPriseISO
     {
+        # LEGACY WARNING: Windows 8.1 eval, EOL + plain HTTP (see docs/DOWNLOADS.md entry 7).
         URI = "http://care.dlservice.microsoft.com/dl/download/5/3/C/53C31ED0-886C-4F81-9A38-F58CE4CE71E8/9200.16384.WIN8_RTM.120725-1247_X64FRE_ENTERPRISE_EVAL_EN-US-HRM_CENA_X64FREE_EN-US_DV5.ISO"
         DestinationPath = "$ISOPath\Win81EnterpriseTrialx64.iso"
         MatchSource = $False
@@ -112,6 +212,7 @@ Configuration DeployMDT2013Lab
 
     xRemoteFile Win10EnterPriseISO
     {
+        # LEGACY WARNING: Windows 10 1507 eval, superseded + plain HTTP (see docs/DOWNLOADS.md entry 8).
         URI = "http://care.dlservice.microsoft.com/dl/download/C/3/9/C399EEA8-135D-4207-92C9-6AAB3259F6EF/10240.16384.150709-1700.TH1_CLIENTENTERPRISEEVAL_OEMRET_X64FRE_EN-US.ISO"
         DestinationPath = "$ISOPath\Win10EnterpriseTrialx64.iso"
         MatchSource = $False
@@ -121,7 +222,7 @@ Configuration DeployMDT2013Lab
 }
 
 Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Starting DSC Config to download and install MDT and toolset"
-DeployMDT2013Lab -Servers localhost -OutputPath $ISOPath -ISOPath $ISOPath
+DeployMDT2013Lab -Servers $Servers -OutputPath $ISOPath -ISOPath $ISOPath
 
 Start-DscConfiguration -Path $ISOPath -wait -Verbose -Force
 
@@ -133,14 +234,14 @@ if( ! (Test-Path C:\Windows\System32\imdisk.exe) )
 
 }
 
-Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Creating deployment share at C:\DeploymentShare"
+Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Creating deployment share at $DeploymentSharePath"
 
 #region Extracting ISOs and importing into MDT
 
-New-Item -Path "C:\DeploymentShare" -ItemType directory
-New-SmbShare -Name "DeploymentShare$" -Path "C:\DeploymentShare" -FullAccess Administrators
+New-Item -Path $DeploymentSharePath -ItemType directory -Force
+New-SmbShare -Name $DeploymentShareName -Path $DeploymentSharePath -FullAccess Administrators
 Import-Module "C:\Program Files\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"
-new-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root "C:\DeploymentShare" -Description "MDT Deployment Share" -NetworkPath "\\NAHOLLLO39872N\DeploymentShare$" -Verbose | add-MDTPersistentDrive -Verbose
+new-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root $DeploymentSharePath -Description "MDT Deployment Share" -NetworkPath $DeploymentShareNetworkPath -Verbose | add-MDTPersistentDrive -Verbose
 new-item -path "DS001:\Operating Systems" -enable "True" -Name "ISO No Updates" -Comments "This folder holds WIM files created from the ISOs. These have no Windows updates installed and no 3rd party software." -ItemType "folder" -Verbose
 
 Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Importing Windows 7 x64 OS"
@@ -265,7 +366,7 @@ SkipBDDWelcome=NO
 SkipAdminAccounts=NO
 ' // Administrators = 
 
-'@ | Out-File C:\DeploymentShare\Control\CustomSettings.ini -Encoding ASCII
+'@ | Out-File (Join-Path $DeploymentSharePath 'Control\CustomSettings.ini') -Encoding ASCII
 
 Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Updating Deployment Share"
 
@@ -393,10 +494,10 @@ Import-MDTTaskSequence -path "DS001:\Task Sequences\Windows 7" `
     -ID "Win7Update" `
     -Version "1.0" `
     -OperatingSystemPath "DS001:\Operating Systems\ISO No Updates\Windows 7 ENTERPRISE in Windows 7 x64 install.wim" `
-    -FullName "Tiberriver256" `
-    -OrgName "Tiberriver256.GitHub.IO" `
-    -HomePage "http://www.google.com" `
-    -AdminPassword "Imaging123" -Verbose
+    -FullName $RegisteredFullName `
+    -OrgName $RegisteredOrgName `
+    -HomePage $RegisteredHomePage `
+    -AdminPassword $TaskSequenceAdminPlaintext -Verbose
 
 Import-MDTTaskSequence -path "DS001:\Task Sequences\Windows 8.1" `
     -Name "Windows 8.1 - Fully Patch OS" `
@@ -405,10 +506,10 @@ Import-MDTTaskSequence -path "DS001:\Task Sequences\Windows 8.1" `
     -ID "Win81Update" `
     -Version "1.0" `
     -OperatingSystemPath "DS001:\Operating Systems\ISO No Updates\Windows 8.1 Enterprise Evaluation in Windows 8.1 x64 install.wim" `
-    -FullName "Tiberriver256" `
-    -OrgName "Tiberriver256.GitHub.IO" `
-    -HomePage "http://www.google.com" `
-    -AdminPassword "Imaging123" -Verbose
+    -FullName $RegisteredFullName `
+    -OrgName $RegisteredOrgName `
+    -HomePage $RegisteredHomePage `
+    -AdminPassword $TaskSequenceAdminPlaintext -Verbose
 
 Import-MDTTaskSequence -path "DS001:\Task Sequences\Windows 10" `
     -Name "Windows 10 - Fully Patch OS" `
@@ -417,10 +518,10 @@ Import-MDTTaskSequence -path "DS001:\Task Sequences\Windows 10" `
     -ID "Win10Update" `
     -Version "1.0" `
     -OperatingSystemPath "DS001:\Operating Systems\ISO No Updates\Windows 10 Enterprise Evaluation in Windows 10 x64 install.wim" `
-    -FullName "Tiberriver256" `
-    -OrgName "Tiberriver256.GitHub.IO" `
-    -HomePage "http://www.google.com" `
-    -AdminPassword "Imaging123" -Verbose
+    -FullName $RegisteredFullName `
+    -OrgName $RegisteredOrgName `
+    -HomePage $RegisteredHomePage `
+    -AdminPassword $TaskSequenceAdminPlaintext -Verbose
 
 Write-ProgressBar $PoshProgressBar -Activity "Setting up MDT Environment" -Status "Adding Apply Packages step to all task sequences"
 
@@ -449,15 +550,15 @@ Function Enable-TaskSequenceStep
 
     }
     
-    [String]$LogPath = "C:\DeploymentShare\Control\$TaskSequenceID\ts.xml"
+    [String]$LogPath = Join-Path $DeploymentSharePath "Control\$TaskSequenceID\ts.xml"
     
     [xml]$TaskSequence = Get-Content $LogPath -Raw -Encoding ASCII
 
     $Steps = $TaskSequence.sequence.group[$GroupTypes[$GroupName]].step
 
-    ($Steps | where {$_.Name -eq $StepName}).Disable = "false"
+    ($Steps | Where-Object {$_.Name -eq $StepName}).Disable = "false"
 
-    $TaskSequence.Save("C:\DeploymentShare\Control\$TaskSequenceID\ts.xml")
+    $TaskSequence.Save((Join-Path $DeploymentSharePath "Control\$TaskSequenceID\ts.xml"))
 
 }
 
@@ -467,7 +568,7 @@ Function Enable-TaskSequenceStep
     "Win81Update",
     "Win10Update"
 
-) | foreach {
+) | ForEach-Object {
                 Enable-TaskSequenceStep -TaskSequenceID $_ `
                     -GroupName "StateRestore" `
                     -StepName "Windows Update (Pre-Application Installation)" `
@@ -552,3 +653,6 @@ import-mdtpackage -path "DS001:\Packages\OS Patches\Windows 10" -SourcePath "$IS
 
 remove-item -path "DS001:\Packages\OS Patches\Windows 7\Package_for_KB2533552 neutral amd64 6.1.1.1" -force -verbose
 remove-item -path "DS001:\Packages\OS Patches\Windows 8.1\Package_for_KB2919355 neutral amd64 6.3.1.14" -force -verbose
+
+# Clear the derived plaintext password as soon as it is no longer needed.
+$TaskSequenceAdminPlaintext = $null
